@@ -1,0 +1,251 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML>
+ <HEAD>
+    <TITLE> Heart </TITLE>
+    <style>
+        html, body { height: 100%; padding: 0; margin: 0; background: black; }
+        canvas { position: absolute; width: 100%; height: 100%; }
+        @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.25); } }
+        @keyframes glow {
+            from { box-shadow: 0 0 20px rgba(255,50,100,0.5), 0 0 40px rgba(255,50,100,0.2); }
+            to   { box-shadow: 0 0 40px rgba(255,50,100,0.9), 0 0 80px rgba(255,50,100,0.5); }
+        }
+    </style>
+ </HEAD>
+ <BODY>
+    <canvas id="pinkboard" style="opacity:0; transition: opacity 0.8s ease;"></canvas>
+    <script>
+    // ── Cài đặt ──────────────────────────────────────────────────────
+    var OUTLINE_COUNT = 4000;
+    var TEXT_COUNT    = 5000;
+    var DURATION      = 5;
+    var VELOCITY      = 1000;
+    var SIZE          = 4;
+
+    // Scale viền tim: chữ "My" ở fontSize 320 rộng khoảng 400px trên canvas 1200px
+    // → chiều rộng chữ ~ 400 đơn vị, tim gốc rộng ~320 (160*2)
+    // Cần tim bao ngoài chữ → scale lên ~1.6 để viền tim rộng hơn chữ
+    var HEART_SCALE = 2.6;
+
+    (function(){var b=0;var c=["ms","moz","webkit","o"];for(var a=0;a<c.length&&!window.requestAnimationFrame;++a){window.requestAnimationFrame=window[c[a]+"RequestAnimationFrame"];window.cancelAnimationFrame=window[c[a]+"CancelAnimationFrame"]||window[c[a]+"CancelRequestAnimationFrame"]}if(!window.requestAnimationFrame){window.requestAnimationFrame=function(h,e){var d=new Date().getTime();var f=Math.max(0,16-(d-b));var g=window.setTimeout(function(){h(d+f)},f);b=d+f;return g}}if(!window.cancelAnimationFrame){window.cancelAnimationFrame=function(d){clearTimeout(d)}}}());
+
+    var Point = (function() {
+        function Point(x, y) { this.x = x||0; this.y = y||0; }
+        Point.prototype.clone = function() { return new Point(this.x, this.y); };
+        Point.prototype.length = function(l) {
+            if (l === undefined) return Math.sqrt(this.x*this.x + this.y*this.y);
+            var n = this.length(); this.x = this.x/n*l; this.y = this.y/n*l; return this;
+        };
+        return Point;
+    })();
+
+    function makePool(count) {
+        var pts = [], firstActive = 0, firstFree = 0;
+        for (var i = 0; i < count; i++) pts.push({ px:0,py:0,vx:0,vy:0,tx:0,ty:0,age:0 });
+        return {
+            add: function(px,py,vx,vy,tx,ty) {
+                var p = pts[firstFree]; p.px=px;p.py=py;p.vx=vx;p.vy=vy;p.tx=tx;p.ty=ty;p.age=0;
+                firstFree=(firstFree+1)%count;
+                if(firstActive===firstFree) firstActive=(firstActive+1)%count;
+            },
+            update: function(dt) {
+                var i=firstActive;
+                while(i!==firstFree){
+                    var p=pts[i];
+                    p.px+=p.vx*dt; p.py+=p.vy*dt;
+                    p.vx+=(p.tx-p.px)*5*dt; p.vy+=(p.ty-p.py)*5*dt;
+                    p.vx+=(Math.random()-0.5)*10; p.vy+=(Math.random()-0.5)*10;
+                    p.vx*=0.88; p.vy*=0.88; p.age+=dt;
+                    i=(i+1)%count;
+                }
+                while(pts[firstActive].age>=DURATION&&firstActive!==firstFree)
+                    firstActive=(firstActive+1)%count;
+            },
+            draw: function(ctx,img) {
+                var i=firstActive;
+                while(i!==firstFree){
+                    var p=pts[i];
+                    var prog=p.age/DURATION, t=prog, ease=(--t)*t*t+1;
+                    var sz=1.5+img.width*0.3*ease;
+                    ctx.globalAlpha=(1-prog)*0.85;
+                    ctx.drawImage(img,p.px-sz/2,p.py-sz/2,sz,sz);
+                    i=(i+1)%count;
+                }
+            }
+        };
+    }
+
+    // Tim gốc (dùng để spawn hạt từ bên trong)
+    function pointOnHeart(t) {
+        return new Point(
+            160*Math.pow(Math.sin(t),3),
+            130*Math.cos(t)-50*Math.cos(2*t)-20*Math.cos(3*t)-10*Math.cos(4*t)+25
+        );
+    }
+
+    // Viền tim được scale to để bao ngoài chữ
+    function buildHeartOutline(n, scale) {
+        var pts = [];
+        for (var i = 0; i < n; i++) {
+            var t = Math.PI - 2*Math.PI*(i/n);
+            var p = pointOnHeart(t);
+            pts.push({ x: p.x * scale, y: -p.y * scale });
+        }
+        return pts;
+    }
+
+    function buildTextPoints(text, fontSize, offsetY) {
+        offsetY = offsetY || 0;
+        var tc = document.createElement("canvas"), ctx = tc.getContext("2d");
+        tc.width=1200; tc.height=600;
+        ctx.fillStyle="white";
+        ctx.font="bold "+fontSize+"px Arial";
+        ctx.textAlign="center"; ctx.textBaseline="middle";
+        ctx.fillText(text,600,300);
+        var data=ctx.getImageData(0,0,tc.width,tc.height).data, pts=[];
+        for(var sy=0;sy<tc.height;sy+=4)
+            for(var sx=0;sx<tc.width;sx+=4)
+                if(data[(sx+sy*tc.width)*4+3]>128)
+                    pts.push({x:sx-600,y:sy-300+offsetY});
+        return pts;
+    }
+
+    var animationStarted = false;
+    var mouseHeld = false;
+    document.addEventListener('mousedown',  function(){ mouseHeld=true;  });
+    document.addEventListener('mouseup',    function(){ mouseHeld=false; });
+    document.addEventListener('touchstart', function(){ mouseHeld=true;  },{passive:true});
+    document.addEventListener('touchend',   function(){ mouseHeld=false; });
+
+    (function(canvas) {
+        var ctx = canvas.getContext('2d'), time;
+
+        var outlinePool = makePool(OUTLINE_COUNT);
+        var textPool    = makePool(TEXT_COUNT);
+        var outlineRate = OUTLINE_COUNT / DURATION;
+        var textRate    = TEXT_COUNT    / DURATION;
+
+        // Viền tim scale to (bao ngoài chữ My)
+        var heartPts    = buildHeartOutline(3000, HEART_SCALE);
+        var ptsMy       = buildTextPoints("My", 320);
+        var ptsLoveYou  = buildTextPoints("Love You", 145, -30);
+        var activeTextPts = ptsMy;
+        var prevMouseHeld = false;
+
+        var img = (function(){
+            var c=document.createElement('canvas'),cx=c.getContext('2d');
+            c.width=SIZE;c.height=SIZE;
+            var center=SIZE/2;
+            var g=cx.createRadialGradient(center,center,0,center,center,SIZE/2);
+            g.addColorStop(0,"rgba(255,255,255,1)");
+            g.addColorStop(0.2,"rgba(255,80,80,1)");
+            g.addColorStop(0.5,"rgba(255,0,0,0.8)");
+            g.addColorStop(1,"rgba(255,0,0,0)");
+            cx.fillStyle=g;
+            cx.arc(center,center,SIZE/4,0,Math.PI*2);
+            cx.shadowBlur=35;cx.shadowColor="#ff0000";cx.fill();
+            var i=new Image();i.src=c.toDataURL();return i;
+        })();
+
+        // Spawn vẫn từ tim gốc (nhỏ) để hạt tạo ra từ giữa rồi bay ra viền lớn
+        function spawnFrom(t) {
+            var pos = pointOnHeart(t);
+            var edge = 0.95 + Math.random()*0.25;
+            pos.x*=edge; pos.y*=edge;
+            var n = pos.clone().length(VELOCITY);
+            return { sx:canvas.width/2+pos.x, sy:canvas.height/2-pos.y, vx:n.x, vy:-n.y };
+        }
+
+        function render() {
+            requestAnimationFrame(render);
+            var newTime=new Date().getTime()/1000, dt=newTime-(time||newTime);
+            time=newTime;
+
+            if(mouseHeld!==prevMouseHeld){
+                prevMouseHeld=mouseHeld;
+                activeTextPts=mouseHeld?ptsLoveYou:ptsMy;
+            }
+
+            ctx.fillStyle="rgba(0,0,0,0.08)";
+            ctx.fillRect(0,0,canvas.width,canvas.height);
+            ctx.restore();
+
+            var i,s,tp;
+
+            // Pool 1: viền tim to (bao ngoài)
+            var oAmount=outlineRate*dt;
+            for(i=0;i<oAmount;i++){
+                var t1=Math.PI-2*Math.PI*Math.random();
+                s=spawnFrom(t1);
+                tp=heartPts[Math.floor(Math.random()*heartPts.length)];
+                outlinePool.add(s.sx,s.sy,s.vx,s.vy,
+                    canvas.width/2+tp.x,
+                    canvas.height/2+tp.y);
+            }
+
+            // Pool 2: chữ My hoặc Love You
+            var tAmount=textRate*dt;
+            for(i=0;i<tAmount;i++){
+                var t2=Math.PI-2*Math.PI*Math.random();
+                s=spawnFrom(t2);
+                tp=activeTextPts[Math.floor(Math.random()*activeTextPts.length)];
+                textPool.add(s.sx,s.sy,s.vx,s.vy,
+                    canvas.width/2+tp.x,
+                    canvas.height/2+tp.y);
+            }
+
+            outlinePool.update(dt);
+            textPool.update(dt);
+            outlinePool.draw(ctx,img);
+            textPool.draw(ctx,img);
+        }
+
+        function onResize(){ canvas.width=canvas.clientWidth; canvas.height=canvas.clientHeight; }
+        window.onresize=onResize;
+        window._startRender=function(){
+            if(!animationStarted){animationStarted=true;time=undefined;onResize();render();}
+        };
+    })(document.getElementById('pinkboard'));
+
+    // ── Hearts cursor ────────────────────────────────────────────────
+    var colours=['#f00','#f06','#f0f','#f6f','#f39','#f9c'];
+    var minisize=10,maxisize=20,hearts=100,over_or_under="over";
+    var x=ox=400,y=oy=300,swide=800,shigh=600,sleft=sdown=0;
+    var herz=[],herzx=[],herzy=[],herzs=[],kiss=false;
+    if(typeof('addRVLoadEvent')!='function')function addRVLoadEvent(funky){var o=window.onload;if(typeof(o)!='function')window.onload=funky;else window.onload=function(){if(o)o();funky();}}
+    addRVLoadEvent(mwah);
+    function mwah(){if(document.getElementById){var i,h;for(i=0;i<hearts;i++){h=createDiv("auto","auto");h.style.visibility="hidden";h.style.zIndex=(over_or_under=="over")?"1001":"0";h.style.color=colours[i%colours.length];h.style.pointerEvents="none";if(navigator.appName=="Microsoft Internet Explorer")h.style.filter="alpha(opacity=75)";else h.style.opacity=0.45;h.appendChild(document.createTextNode(String.fromCharCode(8226)));document.body.appendChild(h);herz[i]=h;herzy[i]=false;}set_scroll();set_width();herzle();}}
+    function herzle(){var c;if(Math.abs(x-ox)>1||Math.abs(y-oy)>1){ox=x;oy=y;for(c=0;c<hearts;c++)if(herzy[c]===false){herz[c].firstChild.nodeValue=String.fromCharCode(8226);herz[c].style.left=(herzx[c]=x-minisize/2)+"px";herz[c].style.top=(herzy[c]=y-minisize)+"px";herz[c].style.fontSize=minisize+"px";herz[c].style.fontWeight='normal';herz[c].style.visibility='visible';herzs[c]=minisize;break;}}for(c=0;c<hearts;c++)if(herzy[c]!==false)blow_me_a_kiss(c);setTimeout("herzle()",30);}
+    document.onmousedown=pucker;document.onmouseup=function(){clearTimeout(kiss);};
+    function pucker(){ox=-1;oy=-1;kiss=setTimeout('pucker()',100);}
+    function blow_me_a_kiss(i){herzy[i]-=herzs[i]/minisize+i%2;herzx[i]+=(i%5-2)/5;if(herzy[i]<sdown-herzs[i]||herzx[i]<sleft-herzs[i]||herzx[i]>sleft+swide-herzs[i]){herz[i].style.visibility="hidden";herzy[i]=false;}else if(herzs[i]>minisize+1&&Math.random()<2.5/hearts)break_my_heart(i);else{if(Math.random()<maxisize/herzy[i]&&herzs[i]<maxisize)herz[i].style.fontSize=(++herzs[i])+"px";herz[i].style.top=herzy[i]+"px";herz[i].style.left=herzx[i]+"px";}}
+    function break_my_heart(i){var t;herz[i].firstChild.nodeValue=String.fromCharCode(8226);herz[i].style.fontWeight='bold';herzy[i]=false;for(t=herzs[i];t<=maxisize;t++)setTimeout('herz['+i+'].style.fontSize="'+t+'px"',60*(t-herzs[i]));setTimeout('herz['+i+'].style.visibility="hidden";',60*(t-herzs[i]));}
+    document.onmousemove=mouse;
+    function mouse(e){if(e){y=e.pageY;x=e.pageX;}else{set_scroll();y=event.y+sdown;x=event.x+sleft;}}
+    window.onresize=set_width;
+    function set_width(){var sw=999999,sh=999999;if(document.documentElement&&document.documentElement.clientWidth){if(document.documentElement.clientWidth>0)sw=document.documentElement.clientWidth;if(document.documentElement.clientHeight>0)sh=document.documentElement.clientHeight;}if(typeof(self.innerWidth)=='number'&&self.innerWidth){if(self.innerWidth>0&&self.innerWidth<sw)sw=self.innerWidth;if(self.innerHeight>0&&self.innerHeight<sh)sh=self.innerHeight;}if(document.body.clientWidth){if(document.body.clientWidth>0&&document.body.clientWidth<sw)sw=document.body.clientWidth;if(document.body.clientHeight>0&&document.body.clientHeight<sh)sh=document.body.clientHeight;}if(sw==999999||sh==999999){sw=800;sh=600;}swide=sw;shigh=sh;}
+    window.onscroll=set_scroll;
+    function set_scroll(){if(typeof(self.pageYOffset)=='number'){sdown=self.pageYOffset;sleft=self.pageXOffset;}else if(document.body&&(document.body.scrollTop||document.body.scrollLeft)){sdown=document.body.scrollTop;sleft=document.body.scrollLeft;}else if(document.documentElement&&(document.documentElement.scrollTop||document.documentElement.scrollLeft)){sleft=document.documentElement.scrollLeft;sdown=document.documentElement.scrollTop;}else{sdown=0;sleft=0;}}
+    function createDiv(h,w){var d=document.createElement("div");d.style.position="absolute";d.style.height=h;d.style.width=w;d.style.overflow="hidden";d.style.backgroundColor="transparent";return d;}
+    </script>
+
+    <audio id="bgm" loop><source src="music.mp3" type="audio/mp3"></audio>
+
+    <div id="startScreen" style="position:fixed;inset:0;background:black;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;">
+        <div style="font-size:60px;margin-bottom:10px;animation:pulse 1.2s ease-in-out infinite;">❤️</div>
+        <div style="color:white;font-family:Arial,sans-serif;font-size:22px;margin-bottom:40px;letter-spacing:2px;opacity:0.85;">Dành tặng người đặc biệt</div>
+        <button onclick="startExperience()" style="background:linear-gradient(135deg,#ff3366,#ff6699);color:white;border:none;border-radius:50px;padding:16px 48px;font-size:18px;font-family:Arial,sans-serif;font-weight:bold;letter-spacing:1px;cursor:pointer;box-shadow:0 0 30px rgba(255,50,100,0.6),0 0 60px rgba(255,50,100,0.3);animation:glow 1.5s ease-in-out infinite alternate;transition:transform 0.1s;" onmouseover="this.style.transform='scale(1.07)'" onmouseout="this.style.transform='scale(1)'">▶ Bắt Đầu</button>
+    </div>
+
+    <script>
+        function startExperience() {
+            var audio=document.getElementById('bgm');
+            audio.volume=1;audio.play();
+            var screen=document.getElementById('startScreen');
+            screen.style.transition='opacity 0.8s ease';screen.style.opacity='0';
+            setTimeout(function(){screen.remove();},800);
+            setTimeout(function(){document.getElementById('pinkboard').style.opacity='1';window._startRender();},50);
+        }
+    </script>
+ </BODY>
+</HTML>
